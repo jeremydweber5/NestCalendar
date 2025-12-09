@@ -264,6 +264,8 @@ function initFullCalendar(){
     nowIndicator: true,
     height: 'auto',
     weekends: true,
+    slotMinTime: '07:00:00',
+    slotMaxTime: '22:00:00',
     eventTimeFormat: { hour: 'numeric', minute: '2-digit', hour12: true },
     events: [], // we'll load dynamically
     datesSet: () => {

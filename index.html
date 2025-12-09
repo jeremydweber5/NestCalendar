@@ -1,0 +1,471 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Nest Hub Calendar Dashboard</title>
+
+<!-- FullCalendar (via CDN) -->
+<link href="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.7/main.min.css" rel="stylesheet" />
+<script src="https://cdn.jsdelivr.net/npm/fullcalendar@6.1.7/main.min.js"></script>
+
+<!-- Google API (gapi) -->
+<script src="https://apis.google.com/js/api.js"></script>
+
+<style>
+  :root{
+    --bg: #ffffff; --fg: #202124; --muted:#5f6368; --accent:#1a73e8;
+    --card:#f8f9fa; --shadow: 0 6px 18px rgba(60,64,67,0.08);
+  }
+  [data-theme="dark"]{
+    --bg: #202124; --fg:#e8eaed; --muted:#9aa0a6; --accent:#8ab4f8;
+    --card:#2a2c2e; --shadow: none;
+  }
+  body{ margin:0; font-family: Inter, Roboto, Arial, sans-serif; background:var(--bg); color:var(--fg); -webkit-font-smoothing:antialiased; }
+  header{ display:flex; align-items:center; justify-content:space-between; padding:12px 16px; gap:12px; background:linear-gradient(0deg,transparent,var(--bg)); position:sticky; top:0; z-index:50; }
+  .brand{ display:flex; align-items:center; gap:12px; }
+  .brand h1{ margin:0; font-size:18px; }
+  .controls{ display:flex; gap:8px; align-items:center; }
+  button,select{ padding:8px 10px; border-radius:8px; border:1px solid rgba(0,0,0,0.08); background:var(--card); color:var(--fg); }
+  #root{ display:grid; grid-template-columns: 1fr 360px; gap:12px; padding:12px; max-width:1200px; margin:0 auto; }
+  .main{ min-height:calc(100vh - 80px); background:transparent; }
+  .side { position:sticky; top:68px; align-self:start; background:transparent; }
+  .card{ background:var(--card); border-radius:12px; padding:12px; box-shadow:var(--shadow); }
+  #calendar { height: calc(80vh); border-radius:8px; overflow:hidden; }
+  .calendar-controls{ display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+  .cal-list{ max-height:300px; overflow:auto; padding:6px; display:flex; flex-direction:column; gap:6px; }
+  .cal-item{ display:flex; align-items:center; gap:8px; }
+  .dashboard-top{ display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .timebig{ font-size:36px; font-weight:600; }
+  .muted{ color:var(--muted); font-size:13px; }
+  footer{ text-align:center; padding:12px; color:var(--muted) }
+  @media (max-width:920px){
+    #root{ grid-template-columns: 1fr; }
+    .side{ position:relative; top:auto; }
+  }
+</style>
+</head>
+<body data-theme="light">
+
+<header>
+  <div class="brand">
+    <svg width="36" height="36" viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="10" fill="#1a73e8"></rect><path d="M14 22h20v2H14z" fill="white"/></svg>
+    <h1>My Calendar — Nest Dashboard</h1>
+    <div class="muted" style="margin-left:8px">Google style • Day/Week/Month • Dashboard</div>
+  </div>
+
+  <div class="controls">
+    <select id="viewSelect">
+      <option value="dayGridMonth">Month</option>
+      <option value="timeGridWeek" selected>Week</option>
+      <option value="timeGridDay">Day</option>
+      <option value="dashboard">Dashboard</option>
+    </select>
+
+    <button id="themeToggle">Dark</button>
+    <button id="signInBtn">Sign in</button>
+    <button id="refreshBtn">Refresh</button>
+  </div>
+</header>
+
+<div id="root">
+  <main class="main">
+    <div id="calendarWrap" class="card">
+      <div class="calendar-controls">
+        <div>
+          <button id="prevBtn">&larr;</button>
+          <button id="todayBtn">Today</button>
+          <button id="nextBtn">&rarr;</button>
+        </div>
+        <div class="muted" id="currentRangeLabel"></div>
+      </div>
+
+      <div id="calendar"></div>
+    </div>
+  </main>
+
+  <aside class="side">
+    <div class="card">
+      <div class="dashboard-top">
+        <div>
+          <div class="timebig" id="timeNow">--:--</div>
+          <div class="muted" id="dateNow">Loading date...</div>
+        </div>
+        <div id="weatherBlock" style="text-align:right">
+          <div id="temp" class="timebig">--°</div>
+          <div id="weatherDesc" class="muted">Loading weather</div>
+        </div>
+      </div>
+
+      <hr style="margin:12px 0; border:none; border-top:1px solid rgba(0,0,0,0.06)">
+
+      <h3 style="margin:6px 0">Calendars</h3>
+      <div class="cal-list card" id="calendarList">
+        <div class="muted">Sign in to load calendars</div>
+      </div>
+    </div>
+
+    <div style="height:12px"></div>
+
+    <div class="card">
+      <h3 style="margin:6px 0">Today's Agenda</h3>
+      <div id="agendaList" class="muted">Sign in to load events</div>
+    </div>
+  </aside>
+</div>
+
+<footer>
+  Tip: on Android open Chrome, press menu → Cast → Cast tab to choose your Nest Hub.
+</footer>
+
+<script>
+/* ====== CONFIG ====== */
+const GOOGLE_CLIENT_ID = 'YOUR_GOOGLE_OAUTH_CLIENT_ID';
+const OWM_KEY = 'YOUR_OPENWEATHERMAP_KEY';
+const DEFAULT_LOCATION = { lat: 43.6532, lon: -79.3832 }; // Toronto default (change if you want)
+
+/* ====== STATE ====== */
+let gapiInited = false;
+let gisInited = false;
+let tokenClient;
+let accessToken = null;
+let calendarList = [];
+let selectedCalendars = new Set();
+let fc; // FullCalendar instance
+
+/* ====== UI refs ====== */
+const signInBtn = document.getElementById('signInBtn');
+const refreshBtn = document.getElementById('refreshBtn');
+const themeToggle = document.getElementById('themeToggle');
+const viewSelect = document.getElementById('viewSelect');
+const calendarListEl = document.getElementById('calendarList');
+const agendaListEl = document.getElementById('agendaList');
+const timeNowEl = document.getElementById('timeNow');
+const dateNowEl = document.getElementById('dateNow');
+const tempEl = document.getElementById('temp');
+const weatherDescEl = document.getElementById('weatherDesc');
+const prevBtn = document.getElementById('prevBtn');
+const nextBtn = document.getElementById('nextBtn');
+const todayBtn = document.getElementById('todayBtn');
+const currentRangeLabel = document.getElementById('currentRangeLabel');
+
+/* ====== INIT GAPI ====== */
+function gapiLoad() {
+  gapi.load('client', async () => {
+    gapiInited = true;
+    await gapi.client.init({
+      apiKey: '', // not required here, using oauth
+      discoveryDocs: ["https://www.googleapis.com/discovery/v1/apis/calendar/v3/rest"]
+    }).catch(console.error);
+  });
+}
+
+window.addEventListener('load', () => {
+  gapiLoad();
+  initUI();
+  startClock();
+  fetchWeather();
+});
+
+/* ====== AUTH ====== */
+// We use the new Google Identity Services token client (gapi+tokenClient approach)
+function initTokenClient() {
+  tokenClient = google.accounts.oauth2.initTokenClient({
+    client_id: GOOGLE_CLIENT_ID,
+    scope: 'https://www.googleapis.com/auth/calendar.readonly',
+    callback: (resp) => {
+      if (resp && resp.access_token) {
+        accessToken = resp.access_token;
+        gapi.client.setToken({ access_token: accessToken });
+        afterSignIn();
+      } else {
+        console.error('Token client callback error', resp);
+      }
+    },
+  });
+}
+
+function handleSignIn() {
+  if (!tokenClient) initTokenClient();
+  tokenClient.requestAccessToken();
+}
+
+function handleSignOut() {
+  accessToken = null;
+  google.accounts.oauth2.revoke(accessToken, () => {
+    calendarList = [];
+    selectedCalendars.clear();
+    renderCalendarList();
+    fc?.removeAllEvents();
+    agendaListEl.innerText = 'Signed out';
+    signInBtn.innerText = 'Sign in';
+  });
+}
+
+/* ====== AFTER SIGN IN ====== */
+async function afterSignIn() {
+  signInBtn.innerText = 'Signed in';
+  await loadCalendarList();
+  renderCalendarList();
+  loadEventsForCurrentView();
+}
+
+/* ====== LOAD CALENDAR LIST (includes subscribed iCal/URL calendars) ====== */
+async function loadCalendarList() {
+  if (!gapi.client) return;
+  let resp = await gapi.client.calendar.calendarList.list({ maxResults: 250 });
+  calendarList = resp.result.items || [];
+  // By default, select calendars that are "selected" in the Google account (hidden flag = false)
+  selectedCalendars.clear();
+  calendarList.forEach(c => {
+    if (c.selected !== false) {
+      selectedCalendars.add(c.id);
+    }
+  });
+}
+
+/* ====== RENDER CALENDAR LIST UI ====== */
+function renderCalendarList(){
+  calendarListEl.innerHTML = '';
+  if (!calendarList || calendarList.length === 0) {
+    calendarListEl.innerHTML = '<div class="muted">No calendars found. Sign in and allow access.</div>';
+    return;
+  }
+  calendarList.forEach(c => {
+    const row = document.createElement('div');
+    row.className = 'cal-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = selectedCalendars.has(c.id);
+    cb.addEventListener('change', () => {
+      if(cb.checked) selectedCalendars.add(c.id); else selectedCalendars.delete(c.id);
+      loadEventsForCurrentView();
+    });
+    const colorDot = document.createElement('span');
+    colorDot.style.width='12px'; colorDot.style.height='12px'; colorDot.style.borderRadius='50%';
+    colorDot.style.background = c.backgroundColor || c.colorRgbFormat?.backgroundColor || '#1a73e8';
+    const label = document.createElement('div');
+    label.style.flex='1';
+    label.innerText = c.summary;
+    label.title = c.id;
+    row.appendChild(cb);
+    row.appendChild(colorDot);
+    row.appendChild(label);
+    calendarListEl.appendChild(row);
+  });
+}
+
+/* ====== FullCalendar setup ====== */
+function initFullCalendar(){
+  const calendarEl = document.getElementById('calendar');
+  fc = new FullCalendar.Calendar(calendarEl, {
+    initialView: 'timeGridWeek',
+    headerToolbar: false,
+    allDaySlot: false,
+    nowIndicator: true,
+    height: 'auto',
+    weekends: true,
+    eventTimeFormat: { hour: 'numeric', minute: '2-digit', hour12: true },
+    events: [], // we'll load dynamically
+    datesSet: () => {
+      currentRangeLabel.innerText = fc.view.title;
+    },
+    eventDidMount: info => {
+      // small style tweak
+      info.el.style.borderRadius = '6px';
+    }
+  });
+  fc.render();
+}
+
+/* ====== LOAD EVENTS for active view range ====== */
+async function loadEventsForRange(startISO, endISO){
+  if (!accessToken) return;
+  // Build promises for each selected calendar
+  const lists = Array.from(selectedCalendars);
+  const eventsArr = [];
+  for (const calId of lists) {
+    try {
+      const resp = await gapi.client.calendar.events.list({
+        calendarId: calId,
+        timeMin: startISO,
+        timeMax: endISO,
+        singleEvents: true,
+        orderBy: 'startTime',
+        maxResults: 250
+      });
+      const items = resp.result.items || [];
+      // attach calendar id & color
+      items.forEach(it => {
+        it._calendarId = calId;
+        // find calendar meta for color
+        const meta = calendarList.find(c => c.id === calId);
+        it._backgroundColor = meta?.backgroundColor || meta?.colorRgbFormat?.backgroundColor || '#1a73e8';
+      });
+      eventsArr.push(...items);
+    } catch (e){
+      console.warn('Error loading events for', calId, e);
+    }
+  }
+  // convert to FullCalendar events
+  const fcEvents = eventsArr.map(it => {
+    return {
+      id: it.id + '::' + (it._calendarId||''),
+      title: it.summary || '(no title)',
+      start: it.start?.dateTime || it.start?.date,
+      end: it.end?.dateTime || it.end?.date,
+      allDay: !!it.start?.date,
+      backgroundColor: it._backgroundColor,
+      borderColor: it._backgroundColor,
+      extendedProps: { description: it.description, location: it.location, calendarId: it._calendarId }
+    };
+  });
+  fc.removeAllEvents();
+  fc.addEventSource(fcEvents);
+  renderAgendaListForToday(eventsArr);
+}
+
+/* ====== LOAD EVENTS BASED ON CURRENT VIEW ====== */
+function loadEventsForCurrentView(){
+  if (!fc) initFullCalendar();
+  if (!accessToken) {
+    agendaListEl.innerText = 'Sign in to load events';
+    return;
+  }
+  const view = fc.view.type;
+  const start = fc.view.activeStart;
+  const end = fc.view.activeEnd;
+  // convert to ISO w/ timezone
+  loadEventsForRange(start.toISOString(), end.toISOString());
+}
+
+/* ====== AGENDA (today) ====== */
+function renderAgendaListForToday(events){
+  const today = new Date().toISOString().slice(0,10);
+  const todays = (events || []).filter(e => (e.start?.dateTime || e.start?.date || '').startsWith(today));
+  if (todays.length === 0) {
+    agendaListEl.innerHTML = '<div class="muted">No events today</div>';
+    return;
+  }
+  agendaListEl.innerHTML = '';
+  todays.forEach(it => {
+    const div = document.createElement('div');
+    div.style.padding='8px 6px';
+    const start = it.start?.dateTime || it.start?.date;
+    const t = new Date(start).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+    div.innerHTML = `<strong>${t}</strong> — ${it.summary || '(no title)'} <div class="muted">${it.location || ''}</div>`;
+    agendaListEl.appendChild(div);
+    const hr = document.createElement('hr'); hr.style.border='none'; hr.style.borderTop='1px solid rgba(0,0,0,0.04)';
+    agendaListEl.appendChild(hr);
+  });
+}
+
+/* ====== WEATHER ====== */
+async function fetchWeather() {
+  try {
+    // Use browser geolocation first if available
+    let lat = DEFAULT_LOCATION.lat, lon = DEFAULT_LOCATION.lon;
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(p => {
+        lat = p.coords.latitude; lon = p.coords.longitude;
+        fetchOWM(lat, lon);
+      }, err => {
+        fetchOWM(lat, lon);
+      }, { timeout: 4000 });
+    } else {
+      fetchOWM(lat, lon);
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+async function fetchOWM(lat, lon){
+  try {
+    const resp = await fetch(`https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OWM_KEY}&units=metric`);
+    const j = await resp.json();
+    if (j && j.main) {
+      tempEl.innerText = Math.round(j.main.temp) + '°C';
+      weatherDescEl.innerText = j.weather?.[0]?.description || '';
+    }
+  } catch (e) { console.error('weather error', e); }
+}
+
+/* ====== CLOCK ====== */
+function startClock(){
+  updateClock();
+  setInterval(updateClock, 60*1000);
+}
+function updateClock(){
+  const now = new Date();
+  timeNowEl.innerText = now.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
+  dateNowEl.innerText = now.toLocaleDateString(undefined, {weekday:'long', month:'short', day:'numeric'});
+}
+
+/* ====== UI INIT & EVENTS ====== */
+function initUI(){
+  // init calendar
+  initFullCalendar();
+
+  // buttons
+  signInBtn.onclick = () => {
+    if (!accessToken) {
+      if (!tokenClient) initTokenClient();
+      tokenClient.requestAccessToken({ prompt: '' });
+    } else {
+      handleSignOut();
+    }
+  };
+  refreshBtn.onclick = () => {
+    if (accessToken) loadCalendarList().then(renderCalendarList).then(loadEventsForCurrentView);
+  };
+  themeToggle.onclick = () => {
+    const el = document.body;
+    if (el.getAttribute('data-theme') === 'light') {
+      el.setAttribute('data-theme','dark'); themeToggle.innerText='Light';
+    } else {
+      el.setAttribute('data-theme','light'); themeToggle.innerText='Dark';
+    }
+  };
+  viewSelect.onchange = () => {
+    const v = viewSelect.value;
+    if (v === 'dashboard') {
+      document.getElementById('calendarWrap').style.display = 'none';
+      // populate agenda and weather already present in side
+    } else {
+      document.getElementById('calendarWrap').style.display = '';
+      fc.changeView(v);
+      loadEventsForCurrentView();
+    }
+  };
+  prevBtn.onclick = () => { fc.prev(); loadEventsForCurrentView(); };
+  nextBtn.onclick = () => { fc.next(); loadEventsForCurrentView(); };
+  todayBtn.onclick = () => { fc.today(); loadEventsForCurrentView(); };
+
+  // default theme based on user pref
+  const prefersDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+  if (prefersDark) { document.body.setAttribute('data-theme','dark'); themeToggle.innerText='Light'; }
+}
+
+/* ====== LOAD GAPI CLIENT WHEN GOOGLE IDENTITY LIB READY ====== */
+// load google identity
+(function loadGoogleIdentity(){
+  const s = document.createElement('script');
+  s.src = 'https://accounts.google.com/gsi/client';
+  s.onload = () => {
+    // wait until user clicks sign in to init token client (we need client id)
+    initTokenClient(); // creates token client
+  };
+  document.head.appendChild(s);
+})();
+
+/* ====== INITIAL VIEW ====== */
+document.addEventListener('DOMContentLoaded', () => {
+  // later when user signs in we will fetch calendars
+  // hook gapi callback load (gapi is loaded above)
+});
+
+// Auto-refresh events when view changes (user navigates calendar)
+setInterval(()=>{ if (accessToken) loadEventsForCurrentView(); }, 2*60*1000); // every 2 minutes
+</script>
+</body>
+</html>
